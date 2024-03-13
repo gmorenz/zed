@@ -139,18 +139,6 @@ pub fn init(assets: impl AssetSource, cx: &mut AppContext) {
     .detach();
 }
 
-#[derive(Debug)]
-pub enum Event {
-    OpenedEntry {
-        entry_id: ProjectEntryId,
-        focus_opened_item: bool,
-    },
-    SplitEntry {
-        entry_id: ProjectEntryId,
-    },
-    Focus,
-}
-
 #[derive(Serialize, Deserialize)]
 struct SerializedProjectPanel {
     width: Option<Pixels>,
@@ -244,75 +232,6 @@ impl ProjectPanel {
             this
         });
 
-        cx.subscribe(&project_panel, {
-            let project_panel = project_panel.downgrade();
-            move |workspace, _, event, cx| match event {
-                &Event::OpenedEntry {
-                    entry_id,
-                    focus_opened_item,
-                } => {
-                    if let Some(worktree) = project.read(cx).worktree_for_entry(entry_id, cx) {
-                        if let Some(entry) = worktree.read(cx).entry_for_id(entry_id) {
-                            let file_path = entry.path.clone();
-                            let worktree_id = worktree.read(cx).id();
-                            let entry_id = entry.id;
-
-                            workspace
-                                .open_path(
-                                    ProjectPath {
-                                        worktree_id,
-                                        path: file_path.clone(),
-                                    },
-                                    None,
-                                    focus_opened_item,
-                                    cx,
-                                )
-                                .detach_and_prompt_err("Failed to open file", cx, move |e, _| {
-                                    match e.error_code() {
-                                        ErrorCode::UnsharedItem => Some(format!(
-                                            "{} is not shared by the host. This could be because it has been marked as `private`",
-                                            file_path.display()
-                                        )),
-                                        _ => None,
-                                    }
-                                });
-
-                            if let Some(project_panel) = project_panel.upgrade() {
-                                // Always select the entry, regardless of whether it is opened or not.
-                                project_panel.update(cx, |project_panel, _| {
-                                    project_panel.selection = Some(Selection {
-                                        worktree_id,
-                                        entry_id
-                                    });
-                                });
-                                if !focus_opened_item {
-                                    let focus_handle = project_panel.read(cx).focus_handle.clone();
-                                    cx.focus(&focus_handle);
-                                }
-                            }
-                        }
-                    }
-                }
-                &Event::SplitEntry { entry_id } => {
-                    if let Some(worktree) = project.read(cx).worktree_for_entry(entry_id, cx) {
-                        if let Some(entry) = worktree.read(cx).entry_for_id(entry_id) {
-                            workspace
-                                .split_path(
-                                    ProjectPath {
-                                        worktree_id: worktree.read(cx).id(),
-                                        path: entry.path.clone(),
-                                    },
-                                    cx,
-                                )
-                                .detach_and_log_err(cx);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        })
-        .detach();
-
         project_panel
     }
 
@@ -360,10 +279,8 @@ impl ProjectPanel {
         );
     }
 
-    fn focus_in(&mut self, cx: &mut ViewContext<Self>) {
-        if !self.focus_handle.contains_focused(cx) {
-            cx.emit(Event::Focus);
-        }
+    fn focus_in(&mut self, _cx: &mut ViewContext<Self>) {
+        // TODO: Presumably this is supposed to... do something?
     }
 
     fn deploy_context_menu(
@@ -673,14 +590,63 @@ impl ProjectPanel {
         focus_opened_item: bool,
         cx: &mut ViewContext<Self>,
     ) {
-        cx.emit(Event::OpenedEntry {
-            entry_id,
-            focus_opened_item,
+        let _ = self.workspace.update(cx, |workspace, cx| {
+            if let Some(worktree) = self.project.read(cx).worktree_for_entry(entry_id, cx) {
+                if let Some(entry) = worktree.read(cx).entry_for_id(entry_id) {
+                    let file_path = entry.path.clone();
+                    let worktree_id = worktree.read(cx).id();
+                    let entry_id = entry.id;
+
+                    workspace
+                        .open_path(
+                            ProjectPath {
+                                worktree_id,
+                                path: file_path.clone(),
+                            },
+                            None,
+                            focus_opened_item,
+                            cx,
+                        )
+                        .detach_and_prompt_err("Failed to open file", cx, move |e, _| {
+                            match e.error_code() {
+                                ErrorCode::UnsharedItem => Some(format!(
+                                    "{} is not shared by the host. This could be because it has been marked as `private`",
+                                    file_path.display()
+                                )),
+                                _ => None,
+                            }
+                        });
+
+                    self.selection = Some(Selection {
+                        worktree_id,
+                        entry_id
+                    });
+
+                    if !focus_opened_item {
+                        let focus_handle = self.focus_handle.clone();
+                        cx.focus(&focus_handle);
+                    }
+                }
+            }
         });
     }
 
     fn split_entry(&mut self, entry_id: ProjectEntryId, cx: &mut ViewContext<Self>) {
-        cx.emit(Event::SplitEntry { entry_id });
+        let _ = self.workspace.update(cx, |workspace, cx| {
+            if let Some(worktree) = self.project.read(cx).worktree_for_entry(entry_id, cx) {
+                if let Some(entry) = worktree.read(cx).entry_for_id(entry_id) {
+                    workspace
+                        .split_path(
+                            ProjectPath {
+                                worktree_id: worktree.read(cx).id(),
+                                path: entry.path.clone(),
+                            },
+                            cx,
+                        )
+                        .detach_and_log_err(cx);
+                }
+            }
+        });
     }
 
     fn new_file(&mut self, _: &NewFile, cx: &mut ViewContext<Self>) {
@@ -1617,8 +1583,6 @@ impl Render for DraggedProjectEntryView {
             )
     }
 }
-
-impl EventEmitter<Event> for ProjectPanel {}
 
 impl EventEmitter<PanelEvent> for ProjectPanel {}
 
